@@ -69,25 +69,27 @@ func NewRouter(doc *openapi3.T) (routers.Router, error) {
 		sort.Strings(methods)
 
 		for _, s := range servers {
-			muxRoute := muxRouter.Path(s.base + path).Methods(methods...)
-			if schemes := s.schemes; len(schemes) != 0 {
-				muxRoute.Schemes(schemes...)
+			for _, method := range methods {
+				muxRoute := muxRouter.Path(s.base + path).Methods(method)
+				if schemes := s.schemes; len(schemes) != 0 {
+					muxRoute.Schemes(schemes...)
+				}
+				if host := s.host; host != "" {
+					muxRoute.Host(host)
+				}
+				if err := muxRoute.GetError(); err != nil {
+					return nil, err
+				}
+				r.muxes = append(r.muxes, muxRoute)
+				r.routes = append(r.routes, &routers.Route{
+					Spec:      doc,
+					Server:    s.server,
+					Path:      path,
+					PathItem:  pathItem,
+					Method:    method,
+					Operation: doc.Paths[path].GetOperation(method),
+				})
 			}
-			if host := s.host; host != "" {
-				muxRoute.Host(host)
-			}
-			if err := muxRoute.GetError(); err != nil {
-				return nil, err
-			}
-			r.muxes = append(r.muxes, muxRoute)
-			r.routes = append(r.routes, &routers.Route{
-				Spec:      doc,
-				Server:    s.server,
-				Path:      path,
-				PathItem:  pathItem,
-				Method:    "",
-				Operation: nil,
-			})
 		}
 	}
 	return r, nil
@@ -95,25 +97,26 @@ func NewRouter(doc *openapi3.T) (routers.Router, error) {
 
 // FindRoute extracts the route and parameters of an http.Request
 func (r *Router) FindRoute(req *http.Request) (*routers.Route, map[string]string, error) {
+	routeErr := routers.ErrPathNotFound
+
 	for i, muxRoute := range r.muxes {
 		var match mux.RouteMatch
 		if muxRoute.Match(req, &match) {
 			if err := match.MatchErr; err != nil {
 				// What then?
 			}
-			route := r.routes[i]
-			route.Method = req.Method
-			route.Operation = route.Spec.Paths[route.Path].GetOperation(route.Method)
-			return route, match.Vars, nil
+
+			return r.routes[i], match.Vars, nil
 		}
+
 		switch match.MatchErr {
 		case nil:
 		case mux.ErrMethodMismatch:
-			return nil, nil, routers.ErrMethodNotAllowed
+			routeErr = routers.ErrMethodNotAllowed
 		default: // What then?
 		}
 	}
-	return nil, nil, routers.ErrPathNotFound
+	return nil, nil, routeErr
 }
 
 func orderedPaths(paths map[string]*openapi3.PathItem) []string {
